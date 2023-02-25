@@ -1,0 +1,13 @@
+version: "3"
+services:
+  transformer_pytorch:
+    image: "transformer_pytorch:latest"
+    build:
+      context: .
+    working_dir: /transformer_pytorch
+    volumes:
+      - $PWD:/transformer_pytorch
+    ipc: host
+    network_mode: host
+    # environment:
+    # - NVIDIA_VISIBLE_DEVICES=
