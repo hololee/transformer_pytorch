@@ -1,8 +1,12 @@
 import spacy
+import numpy as np
+from torch import nn
 from torchtext.datasets import Multi30k
 import torchtext.transforms as T
 from torch.utils.data import DataLoader
 from utils import vocab_utils, transform
+from models.components import Transformer
+import matplotlib.pyplot as plt
 
 
 nlp_en = spacy.load("en_core_web_sm")
@@ -16,7 +20,7 @@ train_datapipe, valid_datapipe, test_datapipe = Multi30k(
 )
 
 max_seq_len = 64
-batch_size = 16
+batch_size = 32
 unk_idx, pad_idx, bos_idx, eos_idx = 0, 1, 2, 3
 
 vocab_en_path = '/transformer_pytorch/data/Multi30k/data/vocab/vocab_en.pickle'
@@ -52,8 +56,14 @@ def apply_transform(x):
 
 
 train_datapipe = train_datapipe.map(apply_transform)
-data_loader = DataLoader(train_datapipe, batch_size=32, num_workers=1, shuffle=True, drop_last=True)
+data_loader = DataLoader(train_datapipe, batch_size, num_workers=1, shuffle=True, drop_last=True)
 
+
+transformer = Transformer(vocab_size=len(vocab_en), embedding_dim=512, n_head=6, head_dim=128)
 
 for batch in data_loader:
     en_text, de_text = batch
+
+    # padding_mask
+    pad_mask = np.where(en_text == pad_idx)  #  (batch_idx, seq_idx)
+    transformer(en_text, pad_mask)
