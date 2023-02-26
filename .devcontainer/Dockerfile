@@ -18,7 +18,6 @@ RUN pip install \
     scipy \
     scikit-image \
     numba \
-    tensorflow \
     torch \
     torchdata \
     torchtext \
