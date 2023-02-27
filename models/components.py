@@ -85,6 +85,9 @@ class ScaledDotProductAttention(nn.Module):
         # (batch, seq_len, n_head, head_dim) -> (batch, n_head, head_dim, seq_len)
         key_T = key_tensor.permute(0, 2, 3, 1)
 
+        # (batch, seq_len, n_head, head_dim) -> (batch, n_head, seq_len, head_dim)
+        value = value_tensor.permute(0, 2, 1, 3)
+
         # https://pytorch.org/docs/stable/generated/torch.matmul.html#torch-matmul
         # QK^T / √(d_k)
         # (batch, n_head, seq_len, seq_len)
@@ -119,8 +122,8 @@ class ScaledDotProductAttention(nn.Module):
         """
         attention = torch.softmax(correlation_masked, dim=-1)
 
-        # matmul
-        output = torch.matmul(attention, value_tensor)
+        # matmul and restore shape. (batch, n_head, seq_len, head_dim) -> (batch, seq_len, n_head, head_dim)
+        output = torch.matmul(attention, value).permute(0, 2, 1, 3)
 
         return output
 
@@ -135,6 +138,7 @@ class MultiHeadAttention(nn.Module):
         self.w_key = nn.Linear(embedding_dim, n_head * head_dim)
         self.w_value = nn.Linear(embedding_dim, n_head * head_dim)
         self.scaled_dot_product_attention = ScaledDotProductAttention(head_dim=head_dim)
+        self.scaled_dot_linear = nn.Linear(n_head * head_dim, embedding_dim)
 
     def forward(self, query, key, value, query_mask, key_mask):
         batch_size = query.shape[0]
@@ -144,9 +148,25 @@ class MultiHeadAttention(nn.Module):
         key_tensor = self.w_key(key).view(batch_size, -1, self.n_head, self.head_dim)
         value_tensor = self.w_value(value).view(batch_size, -1, self.n_head, self.head_dim)
 
+        # (batch, seq_len, n_head, head_dim)
         scaled_dot_product_output = self.scaled_dot_product_attention(
             query_tensor, key_tensor, value_tensor, query_mask, key_mask
         )
 
-        print()
-        # TODO: concat
+        # head들을 concatenate 한다. (batch, seq_len, n_head, head_dim) -> (batch, seq_len, n_head * head_dim)
+        scaled_dot_product_output = scaled_dot_product_output.reshape(
+            scaled_dot_product_output.shape[0], -1, self.n_head * self.head_dim
+        )
+
+        # Dense Layer를 통과시켜 입력 shape과 동일하게 변경.
+        output = self.scaled_dot_linear(scaled_dot_product_output)
+
+        return output
+
+
+class FeedForward(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self):
+        return 0
