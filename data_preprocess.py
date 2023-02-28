@@ -59,7 +59,9 @@ train_datapipe = train_datapipe.map(apply_transform)
 data_loader = DataLoader(train_datapipe, batch_size, num_workers=1, shuffle=True, drop_last=True)
 
 
-transformer = Transformer(vocab_size=len(vocab_en), embedding_dim=512, n_head=6, head_dim=128)
+transformer = Transformer(
+    vocab_size=len(vocab_en), embedding_dim=512, n_head=6, head_dim=128, feed_forward_dim=2048, n_encoder=6
+)
 
 for batch in data_loader:
     en_text, de_text = batch

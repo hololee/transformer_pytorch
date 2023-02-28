@@ -4,13 +4,13 @@ import numpy as np
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, n_head, head_dim):
+    def __init__(self, vocab_size, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder):
         super().__init__()
 
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.input_embedding = nn.Embedding(vocab_size, embedding_dim)
-        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.encoder = Encoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder)
 
     def forward(self, x, pad_mask):
         # embedding.
@@ -18,12 +18,12 @@ class Transformer(nn.Module):
 
         # positional encoding.
         pos_encoding = self.postional_encoding(x, self.embedding_dim, pad_mask)
+        inputs = x_embeded + torch.FloatTensor(pos_encoding)  # (batch, seq_len, embed_dim)
 
-        inputs = x_embeded + torch.FloatTensor(pos_encoding)
+        # encoder module.
+        encoder_output = self.encoder(inputs, pad_mask)  # (batch, seq_len, embed_dim)
 
-        self.multi_head_attention(query=inputs, key=inputs, value=inputs, query_mask=pad_mask, key_mask=pad_mask)
-
-        return inputs
+        return 0
 
     def postional_encoding(self, input, embedding_dim, pad_mask):
         """
@@ -49,6 +49,7 @@ class Transformer(nn.Module):
 
                 encoding_matrix[seq_pos][emb_pos] = sinusoid(angle)
 
+        ## draw positional encoding matrix.
         # plt.pcolormesh(encoding_matrix)
         # plt.xlabel('embedding_position')
         # plt.ylabel('seqence position')
@@ -63,8 +64,52 @@ class Transformer(nn.Module):
         return encoding_matrix
 
 
+class Encoder(nn.Module):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder):
+        super().__init__()
+
+        # encoder 쌓기.
+        self.encoder_layers = nn.ModuleList(
+            [EncoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim) for i in range(n_encoder)]
+        )
+
+    def forward(self, x, pad_mask):
+        # n_encoder 만큼 반복.
+        for i in range(len(self.encoder_layers)):
+            x = self.encoder_layers[i](x, pad_mask)
+        return x
+
+
+class EncoderLayer(nn.Module):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim):
+        """
+        Encoder Layer 한층에 대한 구현.
+        """
+        super().__init__()
+
+        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.layer_norm_after_attention = nn.LayerNorm(embedding_dim)
+        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim)
+        self.layer_norm_after_feedforward = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x, pad_mask):
+        # multi head attention.
+        af_att = self.multi_head_attention(query=x, key=x, value=x, query_mask=pad_mask, key_mask=pad_mask)
+
+        # residual connection + add & norm.
+        sub_output = self.layer_norm_after_attention(x + af_att)  # (batch, seq_len, embed_dim)
+
+        # position-wise feed forward network.
+        af_feed = self.feed_forward(sub_output)  # (batch, seq_len, embed_dim)
+
+        # residual connection + add & norm.
+        encoder_output = self.layer_norm_after_feedforward(sub_output + af_feed)  # (batch, seq_len, embed_dim)
+
+        return encoder_output
+
+
 class ScaledDotProductAttention(nn.Module):
-    def __init__(self, head_dim) -> None:
+    def __init__(self, head_dim):
         super().__init__()
 
         self.head_dim = head_dim
@@ -129,8 +174,14 @@ class ScaledDotProductAttention(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim) -> None:
+    def __init__(self, embedding_dim, n_head, head_dim):
         super().__init__()
+        """
+        Multi head attention에 대한 구현.
+
+        query가 각 key에 대해 미치는 영향(attention)을 학습하고,
+        실제 이 값을 value에 곱해서 그 값을 출력한다.
+        """
 
         self.n_head = n_head
         self.head_dim = head_dim
@@ -165,8 +216,15 @@ class MultiHeadAttention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, embedding_dim, feed_forward_dim):
         super().__init__()
 
-    def forward(self):
-        return 0
+        # 논문에서는 kernel size가 1인 conv를 2번 적용해도 좋다고 함.
+        self.layer1 = nn.Linear(embedding_dim, feed_forward_dim)
+        self.layer2 = nn.Linear(feed_forward_dim, embedding_dim)
+
+    def forward(self, x):
+        output1 = self.layer1(x)  # (batch, seq_len, feed_forward_dim)
+        output2 = self.layer2(output1)  # (batch, seq_len, embed_dim)
+
+        return output2
