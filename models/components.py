@@ -4,28 +4,42 @@ import numpy as np
 
 
 class Transformer(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder):
+    def __init__(
+        self, vocab_size, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder, pad_idx, negative_inf=-1e9
+    ):
         super().__init__()
 
         self.vocab_size = vocab_size
+        self.pad_idx = pad_idx
+        self.negative_inf = negative_inf
         self.embedding_dim = embedding_dim
         self.input_embedding = nn.Embedding(vocab_size, embedding_dim)
         self.encoder = Encoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder)
 
-    def forward(self, x, pad_mask):
+    def forward(self, x):
+        """transformer의 forward.
+
+        Args:
+            x (tensor): (batch, seq_len)
+
+        Returns:
+            _type_: _description_
+        """
         # embedding.
         x_embeded = self.input_embedding(x)  # (batch, seq_len, embed_dim)
 
-        # positional encoding.
-        pos_encoding = self.postional_encoding(x, self.embedding_dim, pad_mask)
+        # positional encoding. # TODO: pad_mask 추가?
+        pos_encoding = self.postional_encoding(x, self.embedding_dim)
         inputs = x_embeded + torch.FloatTensor(pos_encoding)  # (batch, seq_len, embed_dim)
 
+        # generate mask.
+        pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)
         # encoder module.
         encoder_output = self.encoder(inputs, pad_mask)  # (batch, seq_len, embed_dim)
 
         return 0
 
-    def postional_encoding(self, input, embedding_dim, pad_mask):
+    def postional_encoding(self, input, embedding_dim):
         """
         positional 인코딩.
         (seqence length, embedding dimension) 크기의 positional encoding matrix가 생성.
@@ -58,10 +72,52 @@ class Transformer(nn.Module):
         # batch 크기 만큼 복사.
         encoding_matrix = np.tile(encoding_matrix, (batch_size, 1, 1))
 
-        # padding 부분은 0을 적용.
-        encoding_matrix[pad_mask[0], pad_mask[1], :] = 0
-
         return encoding_matrix
+
+    def generate_square_subsequent_mask(self, size: int) -> torch.Tensor:
+        """이후 단어를 미리 인식하지 못하도록 mask.
+        +------+-----+-------+------+
+        |      | i   | like  | you  |
+        +------+-----+-------+------+
+        | i    |  0  | -inf  | -inf |
+        +------+-----+-------+------+
+        | like |  0  |   0   | -inf |
+        +------+-----+-------+------+
+        | you  |  0  |   0   |  0   |
+        +------+-----+-------+------+
+        """
+        return torch.triu(torch.ones(size, size) * self.negative_inf, diagonal=1)
+
+    def generate_square_pad_mask(self, query, key, pad_idx) -> torch.Tensor:
+        """padding에 해당하는 부분은 계산하지 않도록 mask.
+
+        +-------+------+------+------+-------+-------+
+        |       | i    | like | you  | <pad> | <pad> |
+        +-------+------+------+------+-------+-------+
+        | i     | 0    | 0    | 0    | -inf  | -inf  |
+        +-------+------+------+------+-------+-------+
+        | like  | 0    | 0    | 0    | -inf  | -inf  |
+        +-------+------+------+------+-------+-------+
+        | you   | 0    | 0    | 0    | -inf  | -inf  |
+        +-------+------+------+------+-------+-------+
+        | <pad> | -inf | -inf | -inf | -inf  | -inf  |
+        +-------+------+------+------+-------+-------+
+        | <pad> | -inf | -inf | -inf | -inf  | -inf  |
+        +-------+------+------+------+-------+-------+
+
+        Args:
+            query (_type_): (batch, seq_len)
+            key (_type_): (batch, seq_len)
+
+        Returns:
+            torch.Tensor: (batch, seq_len, seq_len)
+        """
+        # padding_mask
+
+        pad_mask = torch.zeros(query.shape[0], query.shape[1], key.shape[1])
+        pad_mask[torch.where(query == pad_idx)[0], torch.where(query == pad_idx)[1], :] = self.negative_inf
+        pad_mask[torch.where(key == pad_idx)[0], :, torch.where(key == pad_idx)[1]] = self.negative_inf
+        return pad_mask
 
 
 class Encoder(nn.Module):
@@ -73,10 +129,10 @@ class Encoder(nn.Module):
             [EncoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim) for i in range(n_encoder)]
         )
 
-    def forward(self, x, pad_mask):
+    def forward(self, x, self_attention_mask):
         # n_encoder 만큼 반복.
         for i in range(len(self.encoder_layers)):
-            x = self.encoder_layers[i](x, pad_mask)
+            x = self.encoder_layers[i](x, self_attention_mask)
         return x
 
 
@@ -92,9 +148,9 @@ class EncoderLayer(nn.Module):
         self.feed_forward = FeedForward(embedding_dim, feed_forward_dim)
         self.layer_norm_after_feedforward = nn.LayerNorm(embedding_dim)
 
-    def forward(self, x, pad_mask):
+    def forward(self, x, self_attention_mask):
         # multi head attention.
-        af_att = self.multi_head_attention(query=x, key=x, value=x, query_mask=pad_mask, key_mask=pad_mask)
+        af_att = self.multi_head_attention(query=x, key=x, value=x, mask=self_attention_mask)
 
         # residual connection + add & norm.
         sub_output = self.layer_norm_after_attention(x + af_att)  # (batch, seq_len, embed_dim)
@@ -108,19 +164,21 @@ class EncoderLayer(nn.Module):
         return encoder_output
 
 
+# TODO: add decoder.
+
+
 class ScaledDotProductAttention(nn.Module):
     def __init__(self, head_dim):
         super().__init__()
 
         self.head_dim = head_dim
 
-    def forward(self, query_tensor, key_tensor, value_tensor, query_mask, key_mask):
+    def forward(self, query_tensor, key_tensor, value_tensor, mask):
         """
         여기서 matmul((seq_len, head_dim), (head_dim, seq_len))이 필요함.
-        -> (seq_len, seq_len)으로 각 토큰이 다른 토큰에 미치는 영향을 볼 수 있음.
+        -> (seq_len, seq_len)으로 각 query 토큰이 다른 key 토큰에 미치는 영향을 볼 수 있음.
 
-        query_mask: (array(batch_idx), array(seq_idx))
-        key_mask: (array(batch_idx), array(seq_idx))
+        mask: (batch, seq_len, seq_len)
         """
         # (batch, seq_len, n_head, head_dim)
 
@@ -138,14 +196,13 @@ class ScaledDotProductAttention(nn.Module):
         # (batch, n_head, seq_len, seq_len)
         correlation = torch.matmul(query, key_T) / self.head_dim ** (1 / 2)
 
-        ## mask 부분을 0으로 하는 mask 생성.
-        attention_mask = torch.ones(correlation.shape)
-        attention_mask[query_mask[0], :, query_mask[1], :] = 0
-        attention_mask[key_mask[0], :, :, key_mask[1]] = 0
-
-        ## attention mask, 0으로 하면 gradient가 사라지므로 작은 값으로 표현.
+        ## mask 부분을 -inf으로 하는 mask로 변경.
         # (batch, n_head, seq_len, seq_len)
-        correlation_masked = correlation.masked_fill(attention_mask == 0, -1e10)
+        mask = mask.view(mask.shape[0], 1, mask.shape[1], mask.shape[2]).repeat(1, 6, 1, 1)
+
+        ## attention mask 적용, 0으로 하면 gradient가 사라지므로 작은 값으로 표현.
+        # (batch, n_head, seq_len, seq_len)
+        correlation_masked = mask + correlation
 
         ## softmax
         # (batch, n_head, seq_len, seq_len)
@@ -191,7 +248,7 @@ class MultiHeadAttention(nn.Module):
         self.scaled_dot_product_attention = ScaledDotProductAttention(head_dim=head_dim)
         self.scaled_dot_linear = nn.Linear(n_head * head_dim, embedding_dim)
 
-    def forward(self, query, key, value, query_mask, key_mask):
+    def forward(self, query, key, value, mask):
         batch_size = query.shape[0]
 
         # 각 shape은 (batch, seq_len, n_head, head_dim).
@@ -200,9 +257,7 @@ class MultiHeadAttention(nn.Module):
         value_tensor = self.w_value(value).view(batch_size, -1, self.n_head, self.head_dim)
 
         # (batch, seq_len, n_head, head_dim)
-        scaled_dot_product_output = self.scaled_dot_product_attention(
-            query_tensor, key_tensor, value_tensor, query_mask, key_mask
-        )
+        scaled_dot_product_output = self.scaled_dot_product_attention(query_tensor, key_tensor, value_tensor, mask)
 
         # head들을 concatenate 한다. (batch, seq_len, n_head, head_dim) -> (batch, seq_len, n_head * head_dim)
         scaled_dot_product_output = scaled_dot_product_output.reshape(

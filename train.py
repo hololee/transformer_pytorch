@@ -60,12 +60,16 @@ data_loader = DataLoader(train_datapipe, batch_size, num_workers=1, shuffle=True
 
 
 transformer = Transformer(
-    vocab_size=len(vocab_en), embedding_dim=512, n_head=6, head_dim=128, feed_forward_dim=2048, n_encoder=6
+    vocab_size=len(vocab_en),
+    embedding_dim=512,
+    n_head=6,
+    head_dim=128,
+    feed_forward_dim=2048,
+    n_encoder=6,
+    pad_idx=pad_idx,
 )
 
 for batch in data_loader:
     en_text, de_text = batch
 
-    # padding_mask
-    pad_mask = np.where(en_text == pad_idx)  #  (batch_idx, seq_idx)
-    transformer(en_text, pad_mask)
+    transformer(en_text)
