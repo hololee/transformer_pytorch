@@ -164,7 +164,32 @@ class EncoderLayer(nn.Module):
         return encoder_output
 
 
-# TODO: add decoder.
+class DecoderLayer(nn.Module):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim):
+        super().__init__()
+
+        self.masked_multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.layer_norm_after_attention_1 = nn.LayerNorm(embedding_dim)
+        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.layer_norm_after_attention_2 = nn.LayerNorm(embedding_dim)
+        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim)
+        self.layer_norm_after_feedforward = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x, encoder_output, self_attention_mask, encoder_decoder_mask):
+        """_summary_
+
+        Args:
+            x (_type_): Teacher forcing 및 다음 단어 추론을 위한 입력.
+            encoder_output (_type_): encoder 모듈의 출력.
+            self_attention_mask (_type_): attention mask 적용시 뒤에 단어는 못보도록 처리가 필요함.
+            encoder_decoder_mask (_type_): 논문의 attention 중 encoder-decoder attention.
+            decoder의 중간 feature를 query로 encoder의 key, value 에 대한 attention을 계산.
+            # REVIEW: 왜 encoder의 value를 넣는지 이해가 잘 안감.
+
+        Returns:
+            _type_: _description_
+        """
+        return 0
 
 
 class ScaledDotProductAttention(nn.Module):
