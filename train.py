@@ -1,11 +1,9 @@
 import spacy
-import numpy as np
-from torch import nn
 from torchtext.datasets import Multi30k
 import torchtext.transforms as T
 from torch.utils.data import DataLoader
 from utils import vocab_utils, transform
-from models.components import Transformer
+from models.transformer import Transformer
 import matplotlib.pyplot as plt
 
 
@@ -60,16 +58,18 @@ data_loader = DataLoader(train_datapipe, batch_size, num_workers=1, shuffle=True
 
 
 transformer = Transformer(
-    vocab_size=len(vocab_en),
+    x_vocab_size=len(vocab_en),
+    y_vocab_size=len(vocab_de),
     embedding_dim=512,
     n_head=6,
     head_dim=128,
     feed_forward_dim=2048,
     n_encoder=6,
+    n_decoder=6,
     pad_idx=pad_idx,
 )
 
 for batch in data_loader:
     en_text, de_text = batch
 
-    transformer(en_text)
+    output = transformer(en_text, de_text)  # (batch, de_text:seq_len)

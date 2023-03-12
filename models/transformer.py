@@ -5,39 +5,85 @@ import numpy as np
 
 class Transformer(nn.Module):
     def __init__(
-        self, vocab_size, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder, pad_idx, negative_inf=-1e9
+        self,
+        x_vocab_size,
+        y_vocab_size,
+        embedding_dim,
+        n_head,
+        head_dim,
+        feed_forward_dim,
+        n_encoder,
+        n_decoder,
+        pad_idx,
+        negative_inf=-1e9,
     ):
         super().__init__()
 
-        self.vocab_size = vocab_size
+        self.x_vocab_size = x_vocab_size
+        self.y_vocab_size = y_vocab_size
         self.pad_idx = pad_idx
         self.negative_inf = negative_inf
         self.embedding_dim = embedding_dim
-        self.input_embedding = nn.Embedding(vocab_size, embedding_dim)
+        self.x_embedding = nn.Embedding(x_vocab_size, embedding_dim)
+        self.y_embedding = nn.Embedding(y_vocab_size, embedding_dim)
         self.encoder = Encoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder)
+        self.decoder = Decoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder)
+        # (batch, seq_len, embed_dim) -> (batch, seq_len, y_vocab_size)
+        self.decode_linear = nn.Linear(embedding_dim, y_vocab_size)
 
-    def forward(self, x):
+    def forward(self, x, y):
         """transformer의 forward.
 
         Args:
-            x (tensor): (batch, seq_len)
+            x (tensor): (batch, x_seq_len)
+            y (tensor): (batch, y_seq_len)
 
         Returns:
             _type_: _description_
         """
+        ## encoder embedding.
         # embedding.
-        x_embeded = self.input_embedding(x)  # (batch, seq_len, embed_dim)
+        x_embeded = self.x_embedding(x)  # (batch, seq_len, embed_dim)
 
         # positional encoding. # TODO: pad_mask 추가?
-        pos_encoding = self.postional_encoding(x, self.embedding_dim)
-        inputs = x_embeded + torch.FloatTensor(pos_encoding)  # (batch, seq_len, embed_dim)
+        pos_encoding_x = self.postional_encoding(x, self.embedding_dim)
+        inputs_x = x_embeded + torch.FloatTensor(pos_encoding_x)  # (batch, seq_len, embed_dim)
 
-        # generate mask.
-        pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)
+        ## decoder embedding.
+        # embedding.
+        y_embeded = self.y_embedding(y)  # (batch, seq_len, embed_dim)
+
+        # positional encoding. # TODO: pad_mask 추가?
+        pos_encoding_y = self.postional_encoding(y, self.embedding_dim)
+        inputs_y = y_embeded + torch.FloatTensor(pos_encoding_y)  # (batch, seq_len, embed_dim)
+
+        ## generate masks.
+        # generate encoder mask.
+        encoder_pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)  # (batch, x_seq_len, x_seq_len)
+
+        # generate decoder mask.
+        decoder_pad_mask = self.generate_square_pad_mask(y, y, self.pad_idx)  # (batch, y_seq_len, y_seq_len)
+        decoder_subsequent_mask = self.generate_square_subsequent_mask(y.shape[1])  # (y_seq_len, y_seq_len)
+        decoder_mask = decoder_pad_mask + decoder_subsequent_mask  # (batch, y_seq_len, y_seq_len)
+
+        # generate encoder-decoder mask.
+        encoder_decoder_pad_mask = self.generate_square_pad_mask(
+            y, x, self.pad_idx
+        )  # decoder query to encoder key. (batch, y_seq_len, x_seq_len)
+
+        ## foward encoder-decoder modules.
         # encoder module.
-        encoder_output = self.encoder(inputs, pad_mask)  # (batch, seq_len, embed_dim)
+        encoder_output = self.encoder(inputs_x, encoder_pad_mask)  # (batch, seq_len, embed_dim)
 
-        return 0
+        # decoder module.
+        decoder_output = self.decoder(inputs_y, encoder_output, decoder_mask, encoder_decoder_pad_mask)
+
+        ## output process.
+        decoder_output_prob = self.decode_linear(decoder_output)
+        decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
+        output = torch.argmax(decoder_output_prob, dim=-1)
+
+        return output
 
     def postional_encoding(self, input, embedding_dim):
         """
@@ -164,6 +210,22 @@ class EncoderLayer(nn.Module):
         return encoder_output
 
 
+class Decoder(nn.Module):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder):
+        super().__init__()
+
+        # decoder 쌓기.
+        self.decoder_layers = nn.ModuleList(
+            [DecoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim) for i in range(n_decoder)]
+        )
+
+    def forward(self, x, encoder_output, self_attention_mask, encoder_decoder_mask):
+        # n_encoder 만큼 반복.
+        for i in range(len(self.decoder_layers)):
+            x = self.decoder_layers[i](x, encoder_output, self_attention_mask, encoder_decoder_mask)
+        return x
+
+
 class DecoderLayer(nn.Module):
     def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim):
         super().__init__()
@@ -182,14 +244,33 @@ class DecoderLayer(nn.Module):
             x (_type_): Teacher forcing 및 다음 단어 추론을 위한 입력.
             encoder_output (_type_): encoder 모듈의 출력.
             self_attention_mask (_type_): attention mask 적용시 뒤에 단어는 못보도록 처리가 필요함.
-            encoder_decoder_mask (_type_): 논문의 attention 중 encoder-decoder attention.
             decoder의 중간 feature를 query로 encoder의 key, value 에 대한 attention을 계산.
-            # REVIEW: 왜 encoder의 value를 넣는지 이해가 잘 안감.
 
         Returns:
             _type_: _description_
         """
-        return 0
+
+        # masked multi head attention.
+        af_att1 = self.masked_multi_head_attention(query=x, key=x, value=x, mask=self_attention_mask)
+
+        # residual connection + add & norm.
+        sub_output = self.layer_norm_after_attention_1(x + af_att1)  # (batch, seq_len, embed_dim)
+
+        # Encoder-decoder multi head attention.
+        af_att2 = self.multi_head_attention(
+            query=sub_output, key=encoder_output, value=encoder_output, mask=encoder_decoder_mask
+        )
+
+        # residual connection + add & norm.
+        sub_output = self.layer_norm_after_attention_2(sub_output + af_att2)  # (batch, seq_len, embed_dim)
+
+        # position-wise feed forward network.
+        af_feed = self.feed_forward(sub_output)  # (batch, seq_len, embed_dim)
+
+        # residual connection + add & norm.
+        decoder_output = self.layer_norm_after_feedforward(sub_output + af_feed)  # (batch, seq_len, embed_dim)
+
+        return decoder_output
 
 
 class ScaledDotProductAttention(nn.Module):
