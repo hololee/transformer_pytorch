@@ -66,6 +66,7 @@ transformer = Transformer(
     feed_forward_dim=2048,
     n_encoder=6,
     n_decoder=6,
+    drop_rate=0.1,
     pad_idx=pad_idx,
 )
 

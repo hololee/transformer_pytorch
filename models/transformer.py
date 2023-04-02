@@ -15,6 +15,7 @@ class Transformer(nn.Module):
         n_encoder,
         n_decoder,
         pad_idx,
+        drop_rate,
         negative_inf=-1e9,
     ):
         super().__init__()
@@ -26,10 +27,11 @@ class Transformer(nn.Module):
         self.embedding_dim = embedding_dim
         self.x_embedding = nn.Embedding(x_vocab_size, embedding_dim)
         self.y_embedding = nn.Embedding(y_vocab_size, embedding_dim)
-        self.encoder = Encoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder)
-        self.decoder = Decoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder)
+        self.encoder = Encoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder, drop_rate)
+        self.decoder = Decoder(embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder, drop_rate)
         # (batch, seq_len, embed_dim) -> (batch, seq_len, y_vocab_size)
         self.decode_linear = nn.Linear(embedding_dim, y_vocab_size)
+        self.dropout = nn.Dropout(drop_rate)
 
     def forward(self, x, y):
         """transformer의 forward.
@@ -48,6 +50,8 @@ class Transformer(nn.Module):
         # positional encoding. # TODO: pad_mask 추가?
         pos_encoding_x = self.postional_encoding(x, self.embedding_dim)
         inputs_x = x_embeded + torch.FloatTensor(pos_encoding_x)  # (batch, seq_len, embed_dim)
+        # 'we apply dropout to the sums of the embeddings and the positional encodings in both the encoder and decoder stacks.'
+        inputs_x = self.dropout(inputs_x)
 
         ## decoder embedding.
         # embedding.
@@ -56,6 +60,7 @@ class Transformer(nn.Module):
         # positional encoding. # TODO: pad_mask 추가?
         pos_encoding_y = self.postional_encoding(y, self.embedding_dim)
         inputs_y = y_embeded + torch.FloatTensor(pos_encoding_y)  # (batch, seq_len, embed_dim)
+        inputs_y = self.dropout(inputs_y)
 
         ## generate masks.
         # generate encoder mask.
@@ -167,12 +172,12 @@ class Transformer(nn.Module):
 
 
 class Encoder(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_encoder, drop_rate):
         super().__init__()
 
         # encoder 쌓기.
         self.encoder_layers = nn.ModuleList(
-            [EncoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim) for i in range(n_encoder)]
+            [EncoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim, drop_rate) for i in range(n_encoder)]
         )
 
     def forward(self, x, self_attention_mask):
@@ -183,15 +188,15 @@ class Encoder(nn.Module):
 
 
 class EncoderLayer(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, drop_rate):
         """
         Encoder Layer 한층에 대한 구현.
         """
         super().__init__()
 
-        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim, drop_rate)
         self.layer_norm_after_attention = nn.LayerNorm(embedding_dim)
-        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim)
+        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim, drop_rate)
         self.layer_norm_after_feedforward = nn.LayerNorm(embedding_dim)
 
     def forward(self, x, self_attention_mask):
@@ -211,12 +216,12 @@ class EncoderLayer(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, n_decoder, drop_rate):
         super().__init__()
 
         # decoder 쌓기.
         self.decoder_layers = nn.ModuleList(
-            [DecoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim) for i in range(n_decoder)]
+            [DecoderLayer(embedding_dim, n_head, head_dim, feed_forward_dim, drop_rate) for i in range(n_decoder)]
         )
 
     def forward(self, x, encoder_output, self_attention_mask, encoder_decoder_mask):
@@ -227,14 +232,14 @@ class Decoder(nn.Module):
 
 
 class DecoderLayer(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim):
+    def __init__(self, embedding_dim, n_head, head_dim, feed_forward_dim, drop_rate):
         super().__init__()
 
-        self.masked_multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.masked_multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim, drop_rate)
         self.layer_norm_after_attention_1 = nn.LayerNorm(embedding_dim)
-        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim)
+        self.multi_head_attention = MultiHeadAttention(embedding_dim, n_head, head_dim, drop_rate)
         self.layer_norm_after_attention_2 = nn.LayerNorm(embedding_dim)
-        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim)
+        self.feed_forward = FeedForward(embedding_dim, feed_forward_dim, drop_rate)
         self.layer_norm_after_feedforward = nn.LayerNorm(embedding_dim)
 
     def forward(self, x, encoder_output, self_attention_mask, encoder_decoder_mask):
@@ -337,7 +342,7 @@ class ScaledDotProductAttention(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, embedding_dim, n_head, head_dim):
+    def __init__(self, embedding_dim, n_head, head_dim, drop_rate):
         super().__init__()
         """
         Multi head attention에 대한 구현.
@@ -353,6 +358,7 @@ class MultiHeadAttention(nn.Module):
         self.w_value = nn.Linear(embedding_dim, n_head * head_dim)
         self.scaled_dot_product_attention = ScaledDotProductAttention(head_dim=head_dim)
         self.scaled_dot_linear = nn.Linear(n_head * head_dim, embedding_dim)
+        self.dropout = nn.Dropout(drop_rate)
 
     def forward(self, query, key, value, mask):
         batch_size = query.shape[0]
@@ -373,19 +379,24 @@ class MultiHeadAttention(nn.Module):
         # Dense Layer를 통과시켜 입력 shape과 동일하게 변경.
         output = self.scaled_dot_linear(scaled_dot_product_output)
 
+        # 'We apply dropout [33] to the output of each sub-layer, before it is added to the sub-layer input and normalized'
+        output = self.dropout(output)
+
         return output
 
 
 class FeedForward(nn.Module):
-    def __init__(self, embedding_dim, feed_forward_dim):
+    def __init__(self, embedding_dim, feed_forward_dim, drop_rate):
         super().__init__()
 
         # 논문에서는 kernel size가 1인 conv를 2번 적용해도 좋다고 함.
         self.layer1 = nn.Linear(embedding_dim, feed_forward_dim)
         self.layer2 = nn.Linear(feed_forward_dim, embedding_dim)
+        self.dropout = nn.Dropout(drop_rate)
 
     def forward(self, x):
         output1 = self.layer1(x)  # (batch, seq_len, feed_forward_dim)
         output2 = self.layer2(output1)  # (batch, seq_len, embed_dim)
+        output = self.dropout(output2)
 
-        return output2
+        return output
