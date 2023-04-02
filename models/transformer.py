@@ -43,13 +43,16 @@ class Transformer(nn.Module):
         Returns:
             _type_: _description_
         """
+        # get device.
+        self.device = x.device
+
         ## encoder embedding.
         # embedding.
         x_embeded = self.x_embedding(x)  # (batch, seq_len, embed_dim)
 
         # positional encoding. # TODO: pad_mask 추가?
         pos_encoding_x = self.postional_encoding(x, self.embedding_dim)
-        inputs_x = x_embeded + torch.FloatTensor(pos_encoding_x)  # (batch, seq_len, embed_dim)
+        inputs_x = x_embeded + torch.FloatTensor(pos_encoding_x).to(self.device)  # (batch, seq_len, embed_dim)
         # 'we apply dropout to the sums of the embeddings and the positional encodings in both the encoder and decoder stacks.'
         inputs_x = self.dropout(inputs_x)
 
@@ -59,7 +62,7 @@ class Transformer(nn.Module):
 
         # positional encoding. # TODO: pad_mask 추가?
         pos_encoding_y = self.postional_encoding(y, self.embedding_dim)
-        inputs_y = y_embeded + torch.FloatTensor(pos_encoding_y)  # (batch, seq_len, embed_dim)
+        inputs_y = y_embeded + torch.FloatTensor(pos_encoding_y).to(self.device)  # (batch, seq_len, embed_dim)
         inputs_y = self.dropout(inputs_y)
 
         ## generate masks.
@@ -78,17 +81,19 @@ class Transformer(nn.Module):
 
         ## foward encoder-decoder modules.
         # encoder module.
-        encoder_output = self.encoder(inputs_x, encoder_pad_mask)  # (batch, seq_len, embed_dim)
+        encoder_output = self.encoder(inputs_x, encoder_pad_mask.to(self.device))  # (batch, seq_len, embed_dim)
 
         # decoder module.
-        decoder_output = self.decoder(inputs_y, encoder_output, decoder_mask, encoder_decoder_pad_mask)
+        decoder_output = self.decoder(
+            inputs_y, encoder_output, decoder_mask.to(self.device), encoder_decoder_pad_mask.to(self.device)
+        )
 
         ## output process.
         decoder_output_prob = self.decode_linear(decoder_output)
-        decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
-        output = torch.argmax(decoder_output_prob, dim=-1)
+        # decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
+        # output = torch.argmax(decoder_output_prob, dim=-1)
 
-        return output
+        return decoder_output_prob
 
     def postional_encoding(self, input, embedding_dim):
         """
@@ -279,10 +284,11 @@ class DecoderLayer(nn.Module):
 
 
 class ScaledDotProductAttention(nn.Module):
-    def __init__(self, head_dim):
+    def __init__(self, head_dim, n_head):
         super().__init__()
 
         self.head_dim = head_dim
+        self.n_head = n_head
 
     def forward(self, query_tensor, key_tensor, value_tensor, mask):
         """
@@ -309,7 +315,7 @@ class ScaledDotProductAttention(nn.Module):
 
         ## mask 부분을 -inf으로 하는 mask로 변경.
         # (batch, n_head, seq_len, seq_len)
-        mask = mask.view(mask.shape[0], 1, mask.shape[1], mask.shape[2]).repeat(1, 6, 1, 1)
+        mask = mask.view(mask.shape[0], 1, mask.shape[1], mask.shape[2]).repeat(1, self.n_head, 1, 1)
 
         ## attention mask 적용, 0으로 하면 gradient가 사라지므로 작은 값으로 표현.
         # (batch, n_head, seq_len, seq_len)
@@ -356,7 +362,7 @@ class MultiHeadAttention(nn.Module):
         self.w_query = nn.Linear(embedding_dim, n_head * head_dim)
         self.w_key = nn.Linear(embedding_dim, n_head * head_dim)
         self.w_value = nn.Linear(embedding_dim, n_head * head_dim)
-        self.scaled_dot_product_attention = ScaledDotProductAttention(head_dim=head_dim)
+        self.scaled_dot_product_attention = ScaledDotProductAttention(head_dim=head_dim, n_head=n_head)
         self.scaled_dot_linear = nn.Linear(n_head * head_dim, embedding_dim)
         self.dropout = nn.Dropout(drop_rate)
 

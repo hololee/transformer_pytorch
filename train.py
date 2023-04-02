@@ -1,10 +1,12 @@
+import time
 import spacy
+import torch
+from torch import nn
+from torch.utils.data import DataLoader
 from torchtext.datasets import Multi30k
 import torchtext.transforms as T
-from torch.utils.data import DataLoader
 from utils import vocab_utils, transform
 from models.transformer import Transformer
-import matplotlib.pyplot as plt
 
 
 nlp_en = spacy.load("en_core_web_sm")
@@ -18,7 +20,7 @@ train_datapipe, valid_datapipe, test_datapipe = Multi30k(
 )
 
 max_seq_len = 64
-batch_size = 32
+batch_size = 256
 unk_idx, pad_idx, bos_idx, eos_idx = 0, 1, 2, 3
 
 vocab_en_path = '/transformer_pytorch/data/Multi30k/data/vocab/vocab_en.pickle'
@@ -56,21 +58,62 @@ def apply_transform(x):
 train_datapipe = train_datapipe.map(apply_transform)
 data_loader = DataLoader(train_datapipe, batch_size, num_workers=1, shuffle=True, drop_last=True)
 
-
 transformer = Transformer(
     x_vocab_size=len(vocab_en),
     y_vocab_size=len(vocab_de),
-    embedding_dim=512,
-    n_head=6,
-    head_dim=128,
-    feed_forward_dim=2048,
-    n_encoder=6,
-    n_decoder=6,
+    embedding_dim=256,
+    n_head=4,
+    head_dim=64,
+    feed_forward_dim=512,
+    n_encoder=3,
+    n_decoder=3,
     drop_rate=0.1,
     pad_idx=pad_idx,
 )
 
-for batch in data_loader:
-    en_text, de_text = batch
+## training.
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+epoch = 20
+lr = 1e-4
+optimizer = torch.optim.Adam(transformer.parameters(), lr)
+criterion = nn.CrossEntropyLoss(ignore_index=pad_idx, label_smoothing=0.1)  # padding index는 학습 x.
 
-    output = transformer(en_text, de_text)  # (batch, de_text:seq_len)
+model = transformer.to(device)
+
+model.train()
+for i in range(epoch):
+    print(f'######### {i+1} epoch #########')
+    # trainging.
+    for batch in data_loader:
+        '''
+        번역이기 때문에 y와 target은 서로 1 index 만큼 shift.
+
+        Example)
+        x = [I, liked, you, when, I, was, young]
+        input_y =  [{sos}, 나는, 너를, 어렸을때, 좋아했다, {eos}] # for teacher forcing.
+        target = [나는, 너를, 어렸을때, 좋아했다, {eos}, {padding}]
+        '''
+        en_text, de_text = batch
+
+        x = en_text.to(device)
+        y = de_text.to(device)
+
+        # grad 초기화.
+        optimizer.zero_grad()
+
+        output = model(x, y[:, :-1])  # (batch, de_text:seq_len, tokens_len)
+        output = output.permute(0, 2, 1)  # (batch, tokens_len, de_text:seq_len)
+
+        # loss 계산 및 학습.
+        loss = criterion(output, y[:, 1:])
+        loss.backward()
+        optimizer.step()
+
+        print(loss.item())
+
+    if i == epoch - 1:
+        torch.save(model.state_dict(), f'transformer-{int(time.time())}.pth')
+
+# TODO: mlflow 적용.
+# TODO: validation BLEU score 계산.
+# TODO: test 출력.
