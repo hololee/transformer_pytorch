@@ -26,7 +26,8 @@ RUN pip install \
     pandas \
     numpy \
     matplotlib \
-    portalocker
+    portalocker \
+    nltk
 
 RUN ln -s /usr/bin/python3 /usr/bin/python
 

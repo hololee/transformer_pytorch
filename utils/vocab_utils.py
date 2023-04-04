@@ -25,3 +25,21 @@ def create_vocab(path, train_datapipe, tokenizer, language):
             pickle.dump(vocab, f, pickle.HIGHEST_PROTOCOL)
 
     return vocab
+
+
+def batch_detokenize(x, vocab, pad_idx, bos_idx, eos_idx):
+    sentences = []
+    for tokens in x.detach().cpu().numpy().tolist():
+        output_tokens = []
+        for token in tokens:
+            if token == bos_idx:
+                pass
+            elif token == eos_idx:
+                break
+            elif token == pad_idx:
+                break
+            else:
+                output_tokens.append(vocab.get_itos()[token])
+
+        sentences.append(output_tokens)
+    return sentences

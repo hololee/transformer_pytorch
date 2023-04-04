@@ -15,6 +15,9 @@ class Transformer(nn.Module):
         n_encoder,
         n_decoder,
         pad_idx,
+        eos_idx,
+        bos_idx,
+        max_seq_len,
         drop_rate,
         negative_inf=-1e9,
     ):
@@ -22,7 +25,12 @@ class Transformer(nn.Module):
 
         self.x_vocab_size = x_vocab_size
         self.y_vocab_size = y_vocab_size
+
         self.pad_idx = pad_idx
+        self.eos_idx = eos_idx
+        self.bos_idx = bos_idx
+        self.max_seq_len = max_seq_len
+
         self.negative_inf = negative_inf
         self.embedding_dim = embedding_dim
         self.x_embedding = nn.Embedding(x_vocab_size, embedding_dim)
@@ -33,7 +41,7 @@ class Transformer(nn.Module):
         self.decode_linear = nn.Linear(embedding_dim, y_vocab_size)
         self.dropout = nn.Dropout(drop_rate)
 
-    def forward(self, x, y):
+    def forward(self, x, y=None):
         """transformer의 forward.
 
         Args:
@@ -43,10 +51,89 @@ class Transformer(nn.Module):
         Returns:
             _type_: _description_
         """
-        # get device.
-        self.device = x.device
+        # check training or inference.
+        if self.training and y is not None:
+            ### for training.
 
-        ## encoder embedding.
+            # get device.
+            self.device = x.device
+
+            ## encoder embedding.
+            inputs_x = self.encoder_embedding(x)
+            ## decoder embedding.
+            inputs_y = self.decoder_embedding(y)
+            ## generate masks.
+            # generate encoder mask.
+            encoder_pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)  # (batch, x_seq_len, x_seq_len)
+            # generate decoder mask.
+            decoder_pad_mask = self.generate_square_pad_mask(y, y, self.pad_idx)  # (batch, y_seq_len, y_seq_len)
+            decoder_subsequent_mask = self.generate_square_subsequent_mask(y.shape[1])  # (y_seq_len, y_seq_len)
+            decoder_mask = decoder_pad_mask + decoder_subsequent_mask  # (batch, y_seq_len, y_seq_len)
+            # generate encoder-decoder mask.
+            encoder_decoder_pad_mask = self.generate_square_pad_mask(
+                y, x, self.pad_idx
+            )  # decoder query to encoder key. (batch, y_seq_len, x_seq_len)
+            ## foward encoder-decoder modules.
+            # encoder module.
+            encoder_output = self.encoder(inputs_x, encoder_pad_mask.to(self.device))  # (batch, seq_len, embed_dim)
+            # decoder module.
+            decoder_output = self.decoder(
+                inputs_y, encoder_output, decoder_mask.to(self.device), encoder_decoder_pad_mask.to(self.device)
+            )
+            ## output process.
+            decoder_output_prob = self.decode_linear(decoder_output)
+            # decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
+            # output = torch.argmax(decoder_output_prob, dim=-1)
+
+            return decoder_output_prob
+
+        else:
+            ### for inference.
+            ## encoder embedding.
+            inputs_x = self.encoder_embedding(x)  # (batch, seq_len, embed_dim)
+
+            # generate encoder mask.
+            encoder_pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)  # (batch, x_seq_len, x_seq_len)
+            # encoder module.
+            encoder_output = self.encoder(inputs_x, encoder_pad_mask.to(self.device))  # (batch, seq_len, embed_dim)
+
+            #### -- repeat decode.
+            for i in range(self.max_seq_len):
+                if i == 0:
+                    # bos 로 초기화. (batch, y_seq_len)
+                    y = torch.ones(x.shape[0], 1) * self.bos_idx
+                    y = y.type(torch.LongTensor).to(self.device)
+
+                else:
+                    # 마지막 글자만 새로 추가.
+                    y = torch.concat([y, output[:, -1:]], axis=1)
+
+                ## decoder embedding.
+                # embedding.
+                inputs_y = self.decoder_embedding(y)  # (batch, seq_len, embed_dim)
+
+                # generate decoder mask.
+                decoder_pad_mask = self.generate_square_pad_mask(y, y, self.pad_idx)  # (batch, y_seq_len, y_seq_len)
+                decoder_subsequent_mask = self.generate_square_subsequent_mask(y.shape[1])  # (y_seq_len, y_seq_len)
+                decoder_mask = decoder_pad_mask + decoder_subsequent_mask  # (batch, y_seq_len, y_seq_len)
+                # generate encoder-decoder mask.
+                encoder_decoder_pad_mask = self.generate_square_pad_mask(
+                    y, x, self.pad_idx
+                )  # decoder query to encoder key. (batch, y_seq_len, x_seq_len)
+
+                # decoder module.
+                decoder_output = self.decoder(
+                    inputs_y, encoder_output, decoder_mask.to(self.device), encoder_decoder_pad_mask.to(self.device)
+                )
+
+                ## output process.
+                decoder_output_prob = self.decode_linear(decoder_output)
+                decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
+                output = torch.argmax(decoder_output_prob, dim=-1)
+
+            return y
+
+    def encoder_embedding(self, x):
         # embedding.
         x_embeded = self.x_embedding(x)  # (batch, seq_len, embed_dim)
 
@@ -56,7 +143,9 @@ class Transformer(nn.Module):
         # 'we apply dropout to the sums of the embeddings and the positional encodings in both the encoder and decoder stacks.'
         inputs_x = self.dropout(inputs_x)
 
-        ## decoder embedding.
+        return inputs_x
+
+    def decoder_embedding(self, y):
         # embedding.
         y_embeded = self.y_embedding(y)  # (batch, seq_len, embed_dim)
 
@@ -65,35 +154,7 @@ class Transformer(nn.Module):
         inputs_y = y_embeded + torch.FloatTensor(pos_encoding_y).to(self.device)  # (batch, seq_len, embed_dim)
         inputs_y = self.dropout(inputs_y)
 
-        ## generate masks.
-        # generate encoder mask.
-        encoder_pad_mask = self.generate_square_pad_mask(x, x, self.pad_idx)  # (batch, x_seq_len, x_seq_len)
-
-        # generate decoder mask.
-        decoder_pad_mask = self.generate_square_pad_mask(y, y, self.pad_idx)  # (batch, y_seq_len, y_seq_len)
-        decoder_subsequent_mask = self.generate_square_subsequent_mask(y.shape[1])  # (y_seq_len, y_seq_len)
-        decoder_mask = decoder_pad_mask + decoder_subsequent_mask  # (batch, y_seq_len, y_seq_len)
-
-        # generate encoder-decoder mask.
-        encoder_decoder_pad_mask = self.generate_square_pad_mask(
-            y, x, self.pad_idx
-        )  # decoder query to encoder key. (batch, y_seq_len, x_seq_len)
-
-        ## foward encoder-decoder modules.
-        # encoder module.
-        encoder_output = self.encoder(inputs_x, encoder_pad_mask.to(self.device))  # (batch, seq_len, embed_dim)
-
-        # decoder module.
-        decoder_output = self.decoder(
-            inputs_y, encoder_output, decoder_mask.to(self.device), encoder_decoder_pad_mask.to(self.device)
-        )
-
-        ## output process.
-        decoder_output_prob = self.decode_linear(decoder_output)
-        # decoder_output_prob = torch.softmax(decoder_output_prob, dim=-1)
-        # output = torch.argmax(decoder_output_prob, dim=-1)
-
-        return decoder_output_prob
+        return inputs_y
 
     def postional_encoding(self, input, embedding_dim):
         """

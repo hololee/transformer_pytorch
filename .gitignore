@@ -131,3 +131,6 @@ dmypy.json
 # system.
 .vscode
 .DS_Store
+
+# saved model.
+models/saved/*
